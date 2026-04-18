@@ -65,11 +65,22 @@ export class LLMClient {
     if (!bin) throw new Error('claude-agent-acp not found. Install bundag with its deps.');
 
     this.proc = spawn(process.execPath, [bin], {
-      stdio: ['pipe', 'pipe', 'inherit'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: process.env,
+    });
+    this.proc.stderr.on('data', (d) => {
+      if (process.env.BUNDAG_DEBUG_LLM || process.env.BUNDAG_DEBUG_ACP) {
+        process.stderr.write('[acp] ' + d.toString());
+      }
     });
     this.proc.on('error', (e) => console.error('[bundag] acp spawn error', e));
     this.proc.on('exit', (c) => { this.conn = null; this.sessionId = null; });
+
+    // Timeout guard: if ACP doesn't respond to initialize in 30s, give up
+    const initTimeout = setTimeout(() => {
+      console.error('[bundag] ACP initialize timed out after 30s. Enable BUNDAG_DEBUG_ACP=1 to see ACP stderr.');
+      try { this.proc.kill(); } catch {}
+    }, 30000);
 
     const stream = ndJsonStream(nodeWritableToWeb(this.proc.stdin), nodeReadableToWeb(this.proc.stdout));
 
@@ -94,6 +105,7 @@ export class LLMClient {
         terminal: false,
       },
     });
+    clearTimeout(initTimeout);
 
     const sess = await this.conn.newSession({
       cwd: process.cwd(),
