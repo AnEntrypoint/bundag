@@ -1,43 +1,73 @@
 import { v4 as uuidv4 } from 'uuid';
 import {
   initStore, upsertEntityNode, upsertEpisodicNode, upsertEntityEdge, upsertEpisodicEdge,
-  expireEdge, vectorSearchNodes, getRecentEpisodes, getEdgesBetween, getEntityNodesByUuids,
+  expireEdge, getDb, getEntityEdgesByUuids, deleteEpisode as storeDeleteEpisode, clearGroup as storeClearGroup,
 } from './store.js';
-import { embed, embedOne, EMBED_DIM } from './embeddings.js';
-import { getLLM } from './llm.js';
-import { promptLibrary } from './prompts/index.js';
+import { embedOne } from './embeddings.js';
+import { extractNodes, resolveExtractedNodes, extractAttributesFromNodes } from './node-operations.js';
+import { extractEdges, resolveExtractedEdges, buildEpisodicEdges, extractEdgeAttributes } from './edge-operations.js';
+import { retrieveEpisodes, buildIndicesAndConstraints, clearData } from './graph-data-operations.js';
+import { buildCommunities, updateCommunity, removeCommunities } from './community-operations.js';
+import { upsertSaga, addEpisodeToSaga, summarizeSaga, getSagaEpisodes } from './saga-operations.js';
+import {
+  retrievePreviousEpisodesBulk, extractNodesAndEdgesBulk, dedupeNodesBulk,
+  dedupeEdgesBulk, resolveEdgePointers, addNodesAndEdgesBulk,
+} from './bulk-utils.js';
+import { search, searchNodes, searchEdges, searchCommunities, searchEpisodes } from './search.js';
+import { SearchConfig, NodeSearchConfig, EdgeSearchConfig, CommunitySearchConfig } from './search-config.js';
+import { SearchFilters } from './search-filters.js';
+import { validateGroupId, getDefaultGroupId } from './namespaces.js';
+import { createTracer } from './tracer.js';
+import { captureEvent } from './telemetry.js';
+import { MAX_SUMMARY_CHARS } from './text-utils.js';
 
 const DEFAULT_GROUP = 'default';
-const SIM_CANDIDATES = 10;
 
 function nowIso() { return new Date().toISOString(); }
 
-function cos(a, b) {
-  let s = 0;
-  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
-  return s;
-}
-
 export class Graphiti {
-  constructor({ dbPath, groupId = DEFAULT_GROUP } = {}) {
+  constructor({ dbPath, groupId = DEFAULT_GROUP, entityTypes = null, edgeTypes = null, excludedEntityTypes = null, storeRawEpisodeContent = true, maxCoroutines = 10, tracer = null } = {}) {
     this.dbPath = dbPath;
     this.groupId = groupId;
+    this.entityTypes = entityTypes;
+    this.edgeTypes = edgeTypes;
+    this.excludedEntityTypes = excludedEntityTypes;
+    this.storeRawEpisodeContent = storeRawEpisodeContent;
+    this.maxCoroutines = maxCoroutines;
+    this.tracer = tracer || createTracer();
     this.ready = false;
   }
 
   async init() {
     if (this.ready) return;
     await initStore(this.dbPath);
+    await buildIndicesAndConstraints();
     this.ready = true;
   }
 
-  async addEpisode({ name, content, source = 'message', sourceDescription = '', validAt = null, groupId = null, previousEpisodes = null }) {
+  async buildIndicesAndConstraints() { return buildIndicesAndConstraints(); }
+
+  async retrieveEpisodes({ groupIds = null, referenceTime = null, limit = 3, source = null } = {}) {
     await this.init();
-    const gid = groupId || this.groupId;
+    return retrieveEpisodes({ groupIds: groupIds || [this.groupId], referenceTime, limit, source });
+  }
+
+  async addEpisode({
+    name = null, content, source = 'message', sourceDescription = '', validAt = null,
+    groupId = null, previousEpisodes = null, sagaUuid = null, entityTypes = null,
+    edgeTypes = null, customExtractionInstructions = '', excludedEntityTypes = null,
+    updateCommunities = false,
+  }) {
+    await this.init();
+    const gid = validateGroupId(groupId || this.groupId);
+    const ets = entityTypes || this.entityTypes;
+    const edts = edgeTypes || this.edgeTypes;
+    const excl = excludedEntityTypes || this.excludedEntityTypes;
+
     const episode = {
       uuid: uuidv4(),
       group_id: gid,
-      name: name || content.slice(0, 60),
+      name: name || String(content).slice(0, 60),
       source,
       source_description: sourceDescription,
       content,
@@ -46,185 +76,257 @@ export class Graphiti {
       entity_edges: [],
     };
 
-    const recent = previousEpisodes || (await getRecentEpisodes([gid], 3, episode.valid_at)).map(r => ({
-      role_type: r.source, content: r.content, timestamp: r.valid_at,
-    }));
+    const prev = previousEpisodes || await retrieveEpisodes({ groupIds: [gid], referenceTime: episode.valid_at, limit: 3 });
 
-    const llm = getLLM();
+    const extracted = await extractNodes({
+      episode, previousEpisodes: prev, entityTypes: ets,
+      excludedEntityTypes: excl, customExtractionInstructions,
+    });
 
-    const entityTypesDesc = '0: Entity — Any named real-world entity.';
-    const extractPromptCtx = {
-      episode_content: content,
-      previous_episodes: recent,
-      source_description: sourceDescription,
-      entity_types: entityTypesDesc,
-      custom_extraction_instructions: '',
-    };
-    const extractPrompt = source === 'text' ? promptLibrary.extract_nodes.extract_text(extractPromptCtx)
-      : source === 'json' ? promptLibrary.extract_nodes.extract_json(extractPromptCtx)
-        : promptLibrary.extract_nodes.extract_message(extractPromptCtx);
-    const extRes = await llm.generate(extractPrompt.system, extractPrompt.user);
-    const rawEntities = Array.isArray(extRes?.extracted_entities) ? extRes.extracted_entities
-      : Array.isArray(extRes?.entities) ? extRes.entities
-      : [];
+    const { resolved, uuidMap, duplicatePairs } = await resolveExtractedNodes({
+      extractedNodes: extracted, episode, previousEpisodes: prev, entityTypes: ets,
+    });
 
-    const candidateNodes = [];
-    for (const e of rawEntities) {
-      if (!e?.name) continue;
-      const emb = await embedOne(e.name);
-      const candsRows = await vectorSearchNodes(emb, [gid], SIM_CANDIDATES);
-      const existing = candsRows.map((r, idx) => ({
-        candidate_id: idx,
-        uuid: r.uuid,
-        name: r.name,
-        summary: r.summary,
-      }));
-      candidateNodes.push({ extracted: e, embedding: emb, existing, existingRows: candsRows });
-    }
+    const rawEdges = await extractEdges({ episode, nodes: resolved, previousEpisodes: prev, edgeTypes: edts, customExtractionInstructions });
 
-    const resolvedNodes = [];
-    if (candidateNodes.length > 0) {
-      const dedupeCtx = {
-        episode_content: content,
-        previous_episodes: recent,
-        extracted_nodes: candidateNodes.map((c, i) => ({ id: i, name: c.extracted.name })),
-        existing_nodes: candidateNodes.flatMap((c, i) =>
-          c.existing.map(e => ({ ...e, candidate_id: `${i}:${e.candidate_id}` }))),
-      };
-      const dedupePrompt = promptLibrary.dedupe_nodes.nodes(dedupeCtx);
-      let dedupeRes;
-      try {
-        dedupeRes = await llm.generate(dedupePrompt.system, dedupePrompt.user);
-      } catch { dedupeRes = { entity_resolutions: [] }; }
-      const resolutions = new Map();
-      for (const r of dedupeRes?.entity_resolutions || []) {
-        resolutions.set(r.id, r);
-      }
-
-      for (let i = 0; i < candidateNodes.length; i++) {
-        const c = candidateNodes[i];
-        const r = resolutions.get(i);
-        let matchUuid = null, matchName = null;
-        if (r?.duplicate_candidate_id && typeof r.duplicate_candidate_id === 'string') {
-          const [ci, ei] = r.duplicate_candidate_id.split(':').map(Number);
-          if (ci === i && c.existing[ei]) { matchUuid = c.existing[ei].uuid; matchName = c.existing[ei].name; }
-        } else if (typeof r?.duplicate_candidate_id === 'number' && r.duplicate_candidate_id >= 0) {
-          const e = c.existing[r.duplicate_candidate_id];
-          if (e) { matchUuid = e.uuid; matchName = e.name; }
-        }
-
-        const finalName = (r?.name || matchName || c.extracted.name).slice(0, 200);
-        if (matchUuid) {
-          resolvedNodes.push({
-            uuid: matchUuid, name: finalName, group_id: gid,
-            labels: [], attributes: {}, summary: '',
-            name_embedding: c.embedding, created_at: nowIso(),
-            isNew: false, extracted: c.extracted,
-          });
-        } else {
-          resolvedNodes.push({
-            uuid: uuidv4(), name: finalName, group_id: gid,
-            labels: [], attributes: {}, summary: '',
-            name_embedding: c.embedding, created_at: nowIso(),
-            isNew: true, extracted: c.extracted,
-          });
-        }
-      }
-    }
-
-    for (const n of resolvedNodes) {
-      await upsertEntityNode(n);
-    }
-
-    let extractedEdges = [];
-    if (resolvedNodes.length >= 2) {
-      const edgePrompt = promptLibrary.extract_edges.edge({
-        episode_content: content,
-        previous_episodes: recent,
-        nodes: resolvedNodes.map(n => ({ name: n.name })),
-        reference_time: episode.valid_at,
-        custom_extraction_instructions: '',
-      });
-      let edgeRes;
-      try { edgeRes = await llm.generate(edgePrompt.system, edgePrompt.user); }
-      catch { edgeRes = { edges: [] }; }
-      extractedEdges = Array.isArray(edgeRes?.edges) ? edgeRes.edges : [];
-    }
-
-    const nameToUuid = new Map(resolvedNodes.map(n => [n.name.toLowerCase(), n.uuid]));
     const savedEdges = [];
-    for (const ex of extractedEdges) {
-      if (!ex?.source_entity_name || !ex?.target_entity_name || !ex?.fact) continue;
-      const srcUuid = nameToUuid.get(ex.source_entity_name.toLowerCase());
-      const tgtUuid = nameToUuid.get(ex.target_entity_name.toLowerCase());
-      if (!srcUuid || !tgtUuid || srcUuid === tgtUuid) continue;
+    for (const ne of rawEdges) {
+      if (!ne.fact_embedding) ne.fact_embedding = await embedOne(ne.fact);
+      const existing = (await getDb().execute({
+        sql: `SELECT * FROM entity_edge WHERE ((source_node_uuid=? AND target_node_uuid=?) OR (source_node_uuid=? AND target_node_uuid=?)) AND group_id=? AND expired_at IS NULL`,
+        args: [ne.source_node_uuid, ne.target_node_uuid, ne.target_node_uuid, ne.source_node_uuid, gid],
+      })).rows;
 
-      const factEmb = await embedOne(ex.fact);
-      const newEdge = {
-        uuid: uuidv4(),
-        group_id: gid,
-        source_node_uuid: srcUuid,
-        target_node_uuid: tgtUuid,
-        name: ex.relation_type || 'RELATES_TO',
-        fact: ex.fact,
-        fact_embedding: factEmb,
-        episodes: [episode.uuid],
-        attributes: {},
-        valid_at: ex.valid_at || null,
-        invalid_at: ex.invalid_at || null,
-        expired_at: null,
-        reference_time: episode.valid_at,
-        created_at: nowIso(),
-      };
-
-      const existingBetween = await getEdgesBetween([srcUuid, tgtUuid], [srcUuid, tgtUuid], [gid]);
-      if (existingBetween.length > 0) {
-        const items = existingBetween.map((e, i) => ({ idx: i, fact: e.fact, name: e.name }));
-        const resolvePrompt = promptLibrary.dedupe_edges.resolve_edge({
-          existing_edges: items,
-          edge_invalidation_candidates: [],
-          new_edge: { fact: ex.fact, name: newEdge.name },
+      let skip = false;
+      if (existing.length) {
+        const items = existing.map((e, i) => ({ idx: i, fact: e.fact, name: e.name }));
+        const { promptLibrary } = await import('./prompts/index.js');
+        const { getLLM } = await import('./llm.js');
+        const llm = getLLM();
+        const prompt = promptLibrary.dedupe_edges.resolve_edge({
+          existing_edges: items, edge_invalidation_candidates: [],
+          new_edge: { fact: ne.fact, name: ne.name },
         });
-        let resolveRes;
-        try { resolveRes = await llm.generate(resolvePrompt.system, resolvePrompt.user); }
-        catch { resolveRes = { duplicate_facts: [], contradicted_facts: [] }; }
-        const dupes = new Set(resolveRes?.duplicate_facts || []);
-        const contras = new Set(resolveRes?.contradicted_facts || []);
-        let skip = false;
-        for (let i = 0; i < existingBetween.length; i++) {
+        let res;
+        try { res = await llm.generate(prompt.system, prompt.user); }
+        catch { res = { duplicate_facts: [], contradicted_facts: [] }; }
+        const dupes = new Set(res?.duplicate_facts || []);
+        const contras = new Set(res?.contradicted_facts || []);
+        for (let i = 0; i < existing.length; i++) {
+          if (contras.has(i)) await expireEdge(existing[i].uuid, nowIso(), ne.valid_at || nowIso());
           if (dupes.has(i)) { skip = true; break; }
         }
-        for (let i = 0; i < existingBetween.length; i++) {
-          if (contras.has(i)) {
-            await expireEdge(existingBetween[i].uuid, nowIso(), newEdge.valid_at || nowIso());
-          }
-        }
-        if (skip) continue;
       }
+      if (skip) continue;
 
-      await upsertEntityEdge(newEdge);
-      await upsertEpisodicEdge({
-        uuid: uuidv4(), group_id: gid,
-        source_node_uuid: episode.uuid,
-        target_node_uuid: srcUuid,
-        created_at: nowIso(),
-      });
-      await upsertEpisodicEdge({
-        uuid: uuidv4(), group_id: gid,
-        source_node_uuid: episode.uuid,
-        target_node_uuid: tgtUuid,
-        created_at: nowIso(),
-      });
-      episode.entity_edges.push(newEdge.uuid);
-      savedEdges.push(newEdge);
+      if (edts) await extractEdgeAttributes({ edge: ne, edgeTypes: edts });
+      await upsertEntityEdge(ne);
+      episode.entity_edges.push(ne.uuid);
+      savedEdges.push(ne);
     }
 
+    // Attribute & summary extraction for nodes using episode context
+    await extractAttributesFromNodes({
+      nodes: resolved, episode, previousEpisodes: prev, entityTypes: ets, edges: savedEdges,
+    });
+
+    for (const n of resolved) await upsertEntityNode(n);
+
+    // Persist episode + episodic edges
+    const epEdges = buildEpisodicEdges({ episode, nodes: resolved });
+    for (const ee of epEdges) await upsertEpisodicEdge(ee);
+
+    if (!this.storeRawEpisodeContent) episode.content = '';
     await upsertEpisodicNode(episode);
+
+    // Saga linkage
+    if (sagaUuid) {
+      const prevEp = prev.length ? prev[prev.length - 1] : null;
+      await addEpisodeToSaga({ sagaUuid, episodeUuid: episode.uuid, groupId: gid, previousEpisodeUuid: prevEp?.uuid });
+    }
+
+    // Optional community update for each resolved node
+    if (updateCommunities) {
+      for (const n of resolved) {
+        try { await updateCommunity({ nodeUuid: n.uuid, groupId: gid }); } catch {}
+      }
+    }
+
+    captureEvent('add_episode', { group_id: gid, nodes: resolved.length, edges: savedEdges.length });
 
     return {
       episode,
-      nodes: resolvedNodes.map(({ name_embedding, isNew, extracted, ...rest }) => rest),
+      nodes: resolved.map(({ name_embedding, ...rest }) => rest),
       edges: savedEdges.map(({ fact_embedding, ...rest }) => rest),
+      episodic_edges: epEdges,
+      communities: [],
+      community_edges: [],
     };
+  }
+
+  async addEpisodeBulk({ episodes, entityTypes = null, edgeTypes = null, groupId = null, customExtractionInstructions = '' }) {
+    await this.init();
+    const gid = validateGroupId(groupId || this.groupId);
+    const episodeObjs = episodes.map(ep => ({
+      uuid: uuidv4(),
+      group_id: ep.group_id || gid,
+      name: ep.name || String(ep.content).slice(0, 60),
+      source: ep.source || 'message',
+      source_description: ep.source_description || '',
+      content: ep.content,
+      valid_at: ep.valid_at || nowIso(),
+      created_at: nowIso(),
+      entity_edges: [],
+    }));
+    const results = await extractNodesAndEdgesBulk({
+      episodes: episodeObjs,
+      entityTypes: entityTypes || this.entityTypes,
+      edgeTypes: edgeTypes || this.edgeTypes,
+      customInstructions: customExtractionInstructions,
+    });
+    const allNodes = [];
+    const allEdges = [];
+    for (const { nodes, edges, uuidMap } of results) {
+      allNodes.push(...nodes);
+      await resolveEdgePointers(edges, uuidMap);
+      allEdges.push(...edges);
+    }
+    const dedupedNodes = await dedupeNodesBulk([allNodes]);
+    const dedupedEdges = await dedupeEdgesBulk([allEdges]);
+    for (const n of dedupedNodes) if (!n.name_embedding) n.name_embedding = await embedOne(n.name);
+    for (const e of dedupedEdges) if (!e.fact_embedding) e.fact_embedding = await embedOne(e.fact);
+    await addNodesAndEdgesBulk({ episodes: episodeObjs, nodes: dedupedNodes, edges: dedupedEdges });
+    return { episodes: episodeObjs, nodes: dedupedNodes, edges: dedupedEdges };
+  }
+
+  async addTriplet({ sourceName, relation, targetName, fact, groupId = null, validAt = null }) {
+    await this.init();
+    const gid = validateGroupId(groupId || this.groupId);
+    const srcEmb = await embedOne(sourceName);
+    const tgtEmb = await embedOne(targetName);
+    const srcNode = {
+      uuid: uuidv4(), name: sourceName, group_id: gid, labels: ['Entity'],
+      attributes: {}, summary: '', name_embedding: srcEmb, created_at: nowIso(),
+    };
+    const tgtNode = {
+      uuid: uuidv4(), name: targetName, group_id: gid, labels: ['Entity'],
+      attributes: {}, summary: '', name_embedding: tgtEmb, created_at: nowIso(),
+    };
+    await upsertEntityNode(srcNode);
+    await upsertEntityNode(tgtNode);
+    const factText = fact || `${sourceName} ${relation} ${targetName}`;
+    const edge = {
+      uuid: uuidv4(), group_id: gid,
+      source_node_uuid: srcNode.uuid,
+      target_node_uuid: tgtNode.uuid,
+      name: relation, fact: factText,
+      fact_embedding: await embedOne(factText),
+      episodes: [], attributes: {},
+      valid_at: validAt || nowIso(), invalid_at: null, expired_at: null,
+      reference_time: validAt || nowIso(), created_at: nowIso(),
+    };
+    await upsertEntityEdge(edge);
+    return { nodes: [srcNode, tgtNode], edges: [edge] };
+  }
+
+  async search(query, { groupIds = null, config = null, centerNodeUuids = null, filters = null, limit = null } = {}) {
+    await this.init();
+    return search({ query, groupIds: groupIds || [this.groupId], config, centerNodeUuids, filters, limit });
+  }
+
+  async searchNodes(query, opts = {}) { await this.init(); return searchNodes({ query, groupIds: opts.groupIds || [this.groupId], ...opts }); }
+  async searchEdges(query, opts = {}) { await this.init(); return searchEdges({ query, groupIds: opts.groupIds || [this.groupId], ...opts }); }
+  async searchCommunities(query, opts = {}) { await this.init(); return searchCommunities({ query, groupIds: opts.groupIds || [this.groupId], ...opts }); }
+  async searchEpisodes(query, opts = {}) { await this.init(); return searchEpisodes({ query, groupIds: opts.groupIds || [this.groupId], ...opts }); }
+
+  async buildCommunities({ groupIds = null } = {}) {
+    await this.init();
+    return buildCommunities({ groupIds: groupIds || [this.groupId] });
+  }
+
+  async removeCommunities({ groupIds = null } = {}) {
+    await this.init();
+    return removeCommunities({ groupIds: groupIds || [this.groupId] });
+  }
+
+  async updateCommunityForNode(nodeUuid, groupId = null) {
+    await this.init();
+    return updateCommunity({ nodeUuid, groupId: groupId || this.groupId });
+  }
+
+  async createSaga({ name, groupId = null, summary = '' }) {
+    await this.init();
+    return upsertSaga({ groupId: groupId || this.groupId, name, summary });
+  }
+
+  async summarizeSaga(sagaUuid) {
+    await this.init();
+    return summarizeSaga({ sagaUuid });
+  }
+
+  async getSagaEpisodes(sagaUuid) {
+    await this.init();
+    return getSagaEpisodes(sagaUuid);
+  }
+
+  async getNodeByUuid(uuid) {
+    await this.init();
+    const r = await getDb().execute({ sql: `SELECT * FROM entity_node WHERE uuid=?`, args: [uuid] });
+    return r.rows[0] || null;
+  }
+
+  async getEdgeByUuid(uuid) {
+    await this.init();
+    const r = await getDb().execute({ sql: `SELECT * FROM entity_edge WHERE uuid=?`, args: [uuid] });
+    return r.rows[0] || null;
+  }
+
+  async getEpisodeByUuid(uuid) {
+    await this.init();
+    const r = await getDb().execute({ sql: `SELECT * FROM episodic_node WHERE uuid=?`, args: [uuid] });
+    return r.rows[0] || null;
+  }
+
+  async getNodesAndEdgesByEpisode(episodeUuid) {
+    await this.init();
+    const db = getDb();
+    const ep = (await db.execute({ sql: `SELECT * FROM episodic_node WHERE uuid=?`, args: [episodeUuid] })).rows[0];
+    if (!ep) return { episode: null, nodes: [], edges: [] };
+    const nodes = (await db.execute({
+      sql: `SELECT n.* FROM entity_node n JOIN episodic_edge ee ON ee.target_node_uuid = n.uuid WHERE ee.source_node_uuid=?`,
+      args: [episodeUuid],
+    })).rows;
+    const edgeUuids = JSON.parse(ep.entity_edges || '[]');
+    const edges = edgeUuids.length ? await getEntityEdgesByUuids(edgeUuids) : [];
+    return { episode: ep, nodes, edges };
+  }
+
+  async deleteEntityEdge(uuid) {
+    await this.init();
+    await getDb().execute({ sql: `DELETE FROM entity_edge_fts WHERE uuid=?`, args: [uuid] });
+    await getDb().execute({ sql: `DELETE FROM entity_edge WHERE uuid=?`, args: [uuid] });
+  }
+
+  async deleteEntityNode(uuid) {
+    await this.init();
+    const db = getDb();
+    await db.execute({ sql: `DELETE FROM entity_edge WHERE source_node_uuid=? OR target_node_uuid=?`, args: [uuid, uuid] });
+    await db.execute({ sql: `DELETE FROM episodic_edge WHERE target_node_uuid=?`, args: [uuid] });
+    await db.execute({ sql: `DELETE FROM entity_node_fts WHERE uuid=?`, args: [uuid] });
+    await db.execute({ sql: `DELETE FROM entity_node WHERE uuid=?`, args: [uuid] });
+  }
+
+  async deleteEpisode(uuid) {
+    await this.init();
+    return storeDeleteEpisode(uuid);
+  }
+
+  async clearGraph({ groupIds = null } = {}) {
+    await this.init();
+    if (groupIds) {
+      for (const g of groupIds) await storeClearGroup(g);
+    } else {
+      await clearData();
+    }
   }
 }

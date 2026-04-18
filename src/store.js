@@ -42,6 +42,33 @@ const SCHEMA = [
     created_at TEXT NOT NULL
   )`,
 
+  `CREATE TABLE IF NOT EXISTS saga_node (
+    uuid TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    summary TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS saga_node_group ON saga_node(group_id)`,
+
+  `CREATE TABLE IF NOT EXISTS has_episode_edge (
+    uuid TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL,
+    source_node_uuid TEXT NOT NULL,
+    target_node_uuid TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS has_episode_edge_src ON has_episode_edge(source_node_uuid)`,
+
+  `CREATE TABLE IF NOT EXISTS next_episode_edge (
+    uuid TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL,
+    source_node_uuid TEXT NOT NULL,
+    target_node_uuid TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS next_episode_edge_src ON next_episode_edge(source_node_uuid)`,
+
   `CREATE TABLE IF NOT EXISTS entity_edge (
     uuid TEXT PRIMARY KEY,
     group_id TEXT NOT NULL,
