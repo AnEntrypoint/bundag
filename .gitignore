@@ -1,0 +1,12 @@
+.gm-stop-verified
+.gm/
+node_modules/
+.bundag/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+.DS_Store
+dist/
+*.log

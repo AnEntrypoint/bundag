@@ -1,0 +1,48 @@
+{
+  "name": "bundag",
+  "version": "0.1.0",
+  "description": "Turnkey temporal context graph (Graphiti port) on libsql with ACP-backed LLM. bunx-ready.",
+  "type": "module",
+  "bin": {
+    "bundag": "./bin/bundag.js",
+    "bundag-mcp": "./mcp.js"
+  },
+  "main": "src/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AnEntrypoint/bundag.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AnEntrypoint/bundag/issues"
+  },
+  "homepage": "https://github.com/AnEntrypoint/bundag#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node ./bin/bundag.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.15.0",
+    "@huggingface/transformers": "^3.8.1",
+    "@agentclientprotocol/sdk": "^0.19.0",
+    "@agentclientprotocol/claude-agent-acp": "^0.29.2",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "onnxruntime-node": "^1.23.2",
+    "onnxruntime-web": "^1.19.0",
+    "uuid": "^10.0.0",
+    "zod": "^3.25.0"
+  },
+  "keywords": [
+    "graphiti",
+    "knowledge-graph",
+    "temporal",
+    "libsql",
+    "mcp",
+    "acp",
+    "memory",
+    "agent"
+  ],
+  "license": "Apache-2.0"
+}

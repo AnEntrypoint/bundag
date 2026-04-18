@@ -1,0 +1,6 @@
+.github/
+.gm/
+tests/
+test.js
+*.db
+.bundag/
