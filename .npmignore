@@ -2,5 +2,12 @@
 .gm/
 tests/
 test.js
+test.out
+test.err
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 .bundag/
+.bungraph/
+.codeinsight

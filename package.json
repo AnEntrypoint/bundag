@@ -1,11 +1,10 @@
 {
-  "name": "bundag",
+  "name": "bungraph",
   "version": "0.1.4",
-  "description": "Turnkey temporal context graph (Graphiti port) on libsql with ACP-backed LLM. bunx-ready.",
+  "description": "Turnkey temporal context graph (Graphiti 1:1 port) on libsql with ACP-backed LLM. Single bunx command. MCP + HTTP + CLI.",
   "type": "module",
   "bin": {
-    "bundag": "./bin/bundag.js",
-    "bundag-mcp": "./mcp.js"
+    "bungraph": "./bin/bundag.js"
   },
   "main": "src/index.js",
   "repository": {

@@ -16,52 +16,60 @@ function parseArgs(argv) {
 }
 
 function help() {
-  console.log(`bundag — turnkey temporal context graph (Graphiti port on libsql + ACP)
+  console.log(`bungraph — turnkey temporal context graph (Graphiti port on libsql + ACP)
 
-Usage:
-  bundag mcp                              Run MCP stdio server
-  bundag serve [--port 8000]              Run HTTP REST server (graphiti server parity)
-  bundag add "content" [--name N] [--source message|text|json] [--saga UUID]
-  bundag bulk-add <json-file>             Bulk ingest from JSON array
-  bundag triplet "source" "REL" "target" [--fact F]
-  bundag search "query" [--limit 10] [--reranker rrf|mmr|node_distance|cross_encoder]
-  bundag search-nodes "q" [--limit N]
-  bundag search-facts "q" [--limit N]
-  bundag search-communities "q"
-  bundag search-episodes "q"
-  bundag episodes [--limit 3]
-  bundag get-node <uuid>
-  bundag get-edge <uuid>
-  bundag get-episode <uuid>
-  bundag build-communities
-  bundag remove-communities
-  bundag create-saga "name"
-  bundag summarize-saga <uuid>
-  bundag delete-episode <uuid>
-  bundag delete-edge <uuid>
-  bundag delete-node <uuid>
-  bundag clear
+Default with no args: runs MCP stdio server.
+
+Modes:
+  bungraph                              Run MCP stdio server (default)
+  bungraph --mcp                        Run MCP stdio server (explicit)
+  bungraph --serve [--port 8000]        Run HTTP REST server
+
+Subcommands:
+  bungraph add "content" [--name N] [--source message|text|json] [--saga UUID]
+  bungraph bulk-add <json-file>
+  bungraph triplet "source" "REL" "target" [--fact F]
+  bungraph search "query" [--limit 10]
+  bungraph search-nodes "q" [--limit N]
+  bungraph search-facts "q" [--limit N]
+  bungraph search-communities "q"
+  bungraph search-episodes "q"
+  bungraph episodes [--limit 3]
+  bungraph get-node <uuid>
+  bungraph get-edge <uuid>
+  bungraph get-episode <uuid>
+  bungraph build-communities
+  bungraph remove-communities
+  bungraph create-saga "name"
+  bungraph summarize-saga <uuid>
+  bungraph delete-episode <uuid>
+  bungraph delete-edge <uuid>
+  bungraph delete-node <uuid>
+  bungraph clear
 
 Common flags:
-  --db <path>    libsql file (default ./bundag.db)
+  --db <path>    libsql file (default ./bungraph.db)
   --group <id>   graph partition (default "default")
 
-No API keys required — uses ACP via claude-agent-acp with system Claude auth.`);
+No API keys required — uses ACP via @agentclientprotocol/claude-agent-acp with system Claude auth.`);
 }
 
 async function main() {
   const a = parseArgs(process.argv.slice(2));
   const cmd = a._[0];
-  const dbPath = resolve(a.flags.db || 'bundag.db');
+  const dbPath = resolve(a.flags.db || 'bungraph.db');
   const group = a.flags.group || 'default';
 
-  if (!cmd || cmd === 'help' || a.flags.help) { help(); return; }
-  if (cmd === 'mcp') {
+  if (a.flags.help || cmd === 'help') { help(); return; }
+
+  // Default: MCP server. Also triggered by --mcp or `mcp` subcommand.
+  if (!cmd && !a.flags.serve && !a.flags.http || a.flags.mcp || cmd === 'mcp') {
     const { startMcpServer } = await import('../mcp.js');
     await startMcpServer(dbPath);
     return;
   }
-  if (cmd === 'serve' || cmd === 'http') {
+
+  if (a.flags.serve || a.flags.http || cmd === 'serve' || cmd === 'http') {
     const { startHttpServer } = await import('../src/http-server.js');
     await startHttpServer({ port: Number(a.flags.port) || 8000, dbPath });
     return;
