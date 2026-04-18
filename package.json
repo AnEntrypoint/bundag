@@ -41,5 +41,18 @@
     "agent",
     "claude-code"
   ],
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "pkg": {
+    "scripts": [
+      "src/**/*.js",
+      "bin/**/*.js"
+    ],
+    "assets": [
+      "node_modules/@libsql/**/*",
+      "node_modules/@huggingface/transformers/dist/**/*",
+      "node_modules/@huggingface/transformers/node_modules/onnxruntime-node/bin/**/*",
+      "node_modules/onnxruntime-node/bin/**/*",
+      "node_modules/onnxruntime-web/dist/**/*"
+    ]
+  }
 }

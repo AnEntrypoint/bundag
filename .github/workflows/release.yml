@@ -7,40 +7,51 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
     permissions:
       contents: write
     if: "startsWith(github.event.head_commit.message, 'chore: bump version')"
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - target: bun-windows-x64
+          - os: windows-latest
+            target: node20-win-x64
             output: bungraph-win-x64.exe
-          - target: bun-windows-arm64
+          - os: windows-11-arm
+            target: node20-win-arm64
             output: bungraph-win-arm64.exe
-          - target: bun-darwin-x64
+          - os: macos-13
+            target: node20-macos-x64
             output: bungraph-macos-x64
-          - target: bun-darwin-arm64
+          - os: macos-latest
+            target: node20-macos-arm64
             output: bungraph-macos-arm64
-          - target: bun-linux-x64
+          - os: ubuntu-latest
+            target: node20-linux-x64
             output: bungraph-linux-x64
-          - target: bun-linux-arm64
+          - os: ubuntu-24.04-arm
+            target: node20-linux-arm64
             output: bungraph-linux-arm64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
         with:
-          bun-version: latest
+          node-version: '20'
 
-      - run: bun install --frozen-lockfile
+      - run: npm install --no-audit --no-fund
 
       - name: Build binary
-        run: bun build --compile --target=${{ matrix.target }} --outfile=dist/${{ matrix.output }} bin/bundag.js
+        shell: bash
+        run: |
+          mkdir -p dist
+          npx --yes @yao-pkg/pkg@latest --targets ${{ matrix.target }} --output dist/${{ matrix.output }} bin/bundag.js
 
       - name: Get version
         id: version
-        run: echo "version=$(jq -r '.version' package.json)" >> $GITHUB_OUTPUT
+        shell: bash
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
