@@ -1,4 +1,4 @@
-name: Publish to npm
+name: Publish and Release
 
 on:
   push:
@@ -11,6 +11,9 @@ jobs:
     permissions:
       contents: write
     if: "!startsWith(github.event.head_commit.message, 'chore: bump version')"
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,12 +26,13 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Bump version
+        id: bump
         run: |
           VERSION=$(jq -r '.version' package.json)
           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
           NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
           jq --arg v "$NEW_VERSION" '.version = $v' package.json > package.json.tmp && mv package.json.tmp package.json
-          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
       - name: Configure git
         run: |
@@ -36,10 +40,12 @@ jobs:
           git config user.email "github-actions@github.com"
 
       - name: Commit version bump
+        id: commit
         run: |
           git add package.json
-          git commit -m "chore: bump version to ${{ env.NEW_VERSION }}"
+          git commit -m "chore: bump version to ${{ steps.bump.outputs.version }}"
           git push
+          echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Publish to npm
         run: |
@@ -47,3 +53,53 @@ jobs:
           npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  build-binary:
+    needs: publish
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: node20-win-x64
+            output: bungraph-win-x64.exe
+          - os: macos-13
+            target: node20-macos-x64
+            output: bungraph-macos-x64
+          - os: macos-latest
+            target: node20-macos-arm64
+            output: bungraph-macos-arm64
+          - os: ubuntu-latest
+            target: node20-linux-x64
+            output: bungraph-linux-x64
+          - os: ubuntu-24.04-arm
+            target: node20-linux-arm64
+            output: bungraph-linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm install --no-audit --no-fund
+
+      - name: Build binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          npx --yes @yao-pkg/pkg@latest --targets ${{ matrix.target }} --output dist/${{ matrix.output }} bin/bundag.js
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.publish.outputs.version }}
+          name: v${{ needs.publish.outputs.version }}
+          files: dist/${{ matrix.output }}
+          make_latest: true
+          fail_on_unmatched_files: true
