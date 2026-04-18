@@ -19,12 +19,11 @@ export async function retrievePreviousEpisodesBulk({ episodes, windowLen = 3 }) 
 
 export async function extractNodesAndEdgesBulk({ episodes, entityTypes = null, edgeTypes = null, customInstructions = '' }) {
   const prevMap = await retrievePreviousEpisodesBulk({ episodes });
-  const nodeResults = [];
-  for (const ep of episodes) {
+  const nodeResults = await Promise.all(episodes.map(async ep => {
     const prev = prevMap.get(ep.uuid) || [];
     const nodes = await extractNodes({ episode: ep, previousEpisodes: prev, entityTypes, customExtractionInstructions: customInstructions });
-    nodeResults.push({ episode: ep, extractedNodes: nodes, previousEpisodes: prev });
-  }
+    return { episode: ep, extractedNodes: nodes, previousEpisodes: prev };
+  }));
 
   const edgeResults = [];
   for (const { episode, extractedNodes, previousEpisodes } of nodeResults) {
