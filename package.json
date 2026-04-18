@@ -1,7 +1,7 @@
 {
   "name": "bungraph",
   "version": "0.1.7",
-  "description": "Turnkey temporal context graph (Graphiti 1:1 port) on libsql with ACP-backed LLM. Single bunx command. MCP + HTTP + CLI.",
+  "description": "Turnkey temporal context graph (Graphiti 1:1 port) on libsql. Uses your local Claude Code CLI — no API keys. Single bunx command. MCP + HTTP + CLI.",
   "type": "module",
   "bin": {
     "bungraph": "./bin/bundag.js"
@@ -25,8 +25,6 @@
   "dependencies": {
     "@libsql/client": "^0.15.0",
     "@huggingface/transformers": "^3.8.1",
-    "@agentclientprotocol/sdk": "^0.19.0",
-    "@agentclientprotocol/claude-agent-acp": "^0.29.2",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "onnxruntime-node": "^1.23.2",
     "onnxruntime-web": "^1.19.0",
@@ -39,9 +37,9 @@
     "temporal",
     "libsql",
     "mcp",
-    "acp",
     "memory",
-    "agent"
+    "agent",
+    "claude-code"
   ],
   "license": "Apache-2.0"
 }

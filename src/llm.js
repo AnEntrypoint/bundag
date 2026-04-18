@@ -1,147 +1,105 @@
 import { spawn } from 'child_process';
-import { Readable, Writable } from 'stream';
-import { ClientSideConnection, ndJsonStream } from '@agentclientprotocol/sdk';
-import { fileURLToPath } from 'url';
-import { dirname, join, resolve } from 'path';
-import { existsSync } from 'fs';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-function nodeReadableToWeb(readable) {
-  return new ReadableStream({
-    start(controller) {
-      readable.on('data', (chunk) => controller.enqueue(new Uint8Array(chunk)));
-      readable.on('end', () => { try { controller.close(); } catch {} });
-      readable.on('error', (e) => { try { controller.error(e); } catch {} });
-    },
-    cancel() { try { readable.destroy(); } catch {} },
-  });
-}
-
-function nodeWritableToWeb(writable) {
-  return new WritableStream({
-    write(chunk) {
-      return new Promise((res, rej) => {
-        writable.write(Buffer.from(chunk), (err) => err ? rej(err) : res());
-      });
-    },
-    close() { return new Promise((res) => writable.end(res)); },
-    abort() { try { writable.destroy(); } catch {} },
-  });
-}
-
-function resolveAcpBin() {
-  const candidates = [
-    resolve(__dirname, '..', 'node_modules', '@agentclientprotocol', 'claude-agent-acp', 'dist', 'index.js'),
-    resolve(process.cwd(), 'node_modules', '@agentclientprotocol', 'claude-agent-acp', 'dist', 'index.js'),
-  ];
-  for (const p of candidates) if (existsSync(p)) return p;
-  return null;
-}
-
-class NullClient {
-  async requestPermission() { return { outcome: { outcome: 'selected', optionId: 'allow' } }; }
-  async writeTextFile() { return {}; }
-  async readTextFile() { return { content: '' }; }
-  async createTerminal() { throw new Error('terminal not supported'); }
-  async sessionUpdate() {}
-  async extMethod() { return {}; }
-  async extNotification() {}
-}
 
 let clientSingleton = null;
 
+function resolveClaudeBin() {
+  // Prefer env override, fall back to PATH `claude`.
+  return process.env.BUNGRAPH_CLAUDE_BIN || 'claude';
+}
+
 export class LLMClient {
   constructor() {
-    this.conn = null;
-    this.proc = null;
-    this.sessionId = null;
-    this.updates = new Map();
+    this.bin = resolveClaudeBin();
   }
 
-  async ensure() {
-    if (this.conn && this.sessionId) return;
-    const bin = resolveAcpBin();
-    if (!bin) throw new Error('claude-agent-acp not found. Install bundag with its deps.');
-
-    this.proc = spawn(process.execPath, [bin], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env,
-    });
-    this.proc.stderr.on('data', (d) => {
-      process.stderr.write('[acp] ' + d.toString());
-    });
-    this.proc.on('error', (e) => console.error('[bundag] acp spawn error', e));
-    this.proc.on('exit', (c) => { this.conn = null; this.sessionId = null; });
-
-    // Timeout guard: if ACP doesn't respond to initialize in 30s, give up
-    const initTimeout = setTimeout(() => {
-      console.error('[bundag] ACP initialize timed out after 30s. Enable BUNDAG_DEBUG_ACP=1 to see ACP stderr.');
-      try { this.proc.kill(); } catch {}
-    }, 30000);
-
-    const stream = ndJsonStream(nodeWritableToWeb(this.proc.stdin), nodeReadableToWeb(this.proc.stdout));
-
-    const self = this;
-    this.conn = new ClientSideConnection((_agent) => ({
-      async requestPermission() { return { outcome: { outcome: 'selected', optionId: 'allow' } }; },
-      async writeTextFile() { return {}; },
-      async readTextFile() { return { content: '' }; },
-      async createTerminal() { throw new Error('no terminal'); },
-      async sessionUpdate(params) {
-        const sid = params.sessionId;
-        const buf = self.updates.get(sid) || [];
-        buf.push(params.update);
-        self.updates.set(sid, buf);
-      },
-    }), stream);
-
-    await this.conn.initialize({
-      protocolVersion: 1,
-      clientCapabilities: {
-        fs: { readTextFile: false, writeTextFile: false },
-        terminal: false,
-      },
-    });
-    clearTimeout(initTimeout);
-
-    const sess = await this.conn.newSession({
-      cwd: process.cwd(),
-      mcpServers: [],
-    });
-    this.sessionId = sess.sessionId;
-  }
-
-  async generate(system, user, { maxAttempts = 3 } = {}) {
-    await this.ensure();
-    const fullUser = system
+  async generate(system, user, { maxAttempts = 3, timeoutMs = 120000 } = {}) {
+    const fullPrompt = system
       ? `${system}\n\n---\n\n${user}\n\nRespond with ONLY a JSON object. No preamble. No code fence.`
       : `${user}\n\nRespond with ONLY a JSON object. No preamble. No code fence.`;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      this.updates.set(this.sessionId, []);
-      await this.conn.prompt({
-        sessionId: this.sessionId,
-        prompt: [{ type: 'text', text: fullUser }],
-      });
-      const text = this.collectText();
-      if (process.env.BUNDAG_DEBUG_LLM) console.error('[bundag] LLM raw:', text.slice(0, 500));
+      const text = await this.callClaude(fullPrompt, timeoutMs);
+      if (process.env.BUNGRAPH_DEBUG_LLM) {
+        process.stderr.write('[bungraph] LLM raw: ' + text.slice(0, 500) + '\n');
+      }
       const parsed = this.parseJson(text);
       if (parsed) return parsed;
-      console.error('[bundag] llm returned non-JSON (len=' + text.length + '), retrying...');
+      process.stderr.write(`[bungraph] LLM returned non-JSON (len=${text.length}), retrying ${attempt + 1}/${maxAttempts}...\n`);
     }
     throw new Error('LLM failed to return JSON after retries');
   }
 
-  collectText() {
-    const buf = this.updates.get(this.sessionId) || [];
-    let text = '';
-    for (const u of buf) {
-      if (u.sessionUpdate === 'agent_message_chunk' && u.content?.type === 'text') {
-        text += u.content.text;
-      }
-    }
-    return text;
+  callClaude(prompt, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const args = [
+        '-p',
+        '--output-format', 'json',
+        '--no-session-persistence',
+        '--disable-slash-commands',
+        '--permission-mode', 'bypassPermissions',
+      ];
+      // Pass prompt via stdin to avoid shell-escaping issues for long multi-line prompts.
+      const proc = spawn(this.bin, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: process.env,
+        shell: false,
+      });
+
+      let stdout = '';
+      let stderr = '';
+      let finished = false;
+
+      const timer = setTimeout(() => {
+        if (!finished) {
+          finished = true;
+          try { proc.kill(); } catch {}
+          reject(new Error(`claude -p timed out after ${timeoutMs}ms. stderr: ${stderr.slice(0, 500)}`));
+        }
+      }, timeoutMs);
+
+      proc.on('error', (e) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        if (e.code === 'ENOENT') {
+          reject(new Error(`Claude CLI not found on PATH. Install Claude Code: https://claude.com/claude-code. Set BUNGRAPH_CLAUDE_BIN to override the binary path.`));
+        } else {
+          reject(e);
+        }
+      });
+
+      proc.stdout.on('data', (d) => { stdout += d.toString(); });
+      proc.stderr.on('data', (d) => {
+        stderr += d.toString();
+        if (process.env.BUNGRAPH_DEBUG_CLAUDE) {
+          process.stderr.write('[claude] ' + d.toString());
+        }
+      });
+
+      proc.on('close', (code) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        if (code !== 0) {
+          reject(new Error(`claude -p exited with code ${code}. stderr: ${stderr.slice(0, 500)}`));
+          return;
+        }
+        try {
+          const parsed = JSON.parse(stdout);
+          if (parsed.is_error) {
+            reject(new Error(`Claude error: ${parsed.result || parsed.api_error_status || 'unknown'}`));
+            return;
+          }
+          resolve(parsed.result || '');
+        } catch (e) {
+          // Not JSON envelope — return raw
+          resolve(stdout);
+        }
+      });
+
+      proc.stdin.write(prompt);
+      proc.stdin.end();
+    });
   }
 
   parseJson(text) {
@@ -168,8 +126,7 @@ export class LLMClient {
   }
 
   async close() {
-    try { if (this.proc) this.proc.kill(); } catch {}
-    this.conn = null; this.sessionId = null; this.proc = null;
+    // nothing persistent to clean up
   }
 }
 

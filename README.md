@@ -4,7 +4,7 @@ Turnkey temporal context graph on libsql for AI agents. A 1:1 JavaScript port of
 
 - **libsql** — single-file embedded graph + vector (F32_BLOB + `vector_top_k`) + FTS5 keyword search. Zero external servers.
 - **Local embeddings** — `Xenova/all-MiniLM-L6-v2` (384d) via transformers.js. No API keys.
-- **LLM via ACP** — entity/edge extraction, dedupe, temporal resolution, community summaries, saga summaries, and cross-encoder reranking driven through the [Agent Client Protocol](https://agentclientprotocol.com) using `@agentclientprotocol/claude-agent-acp`. Uses your existing Claude Code / system authentication. **No ANTHROPIC_API_KEY env var required.**
+- **LLM via Claude Code CLI** — entity/edge extraction, dedupe, temporal resolution, community summaries, saga summaries, and cross-encoder reranking driven through your locally-installed `claude` CLI (non-interactive `claude -p`). Uses whatever Claude Code is configured with locally. **No env vars required** — bungraph passes nothing to `claude`; it just runs your default configuration.
 
 ## Quick start
 
@@ -69,9 +69,9 @@ Combines `vector_top_k` (F32 cosine) + FTS5 (BM25) via Reciprocal Rank Fusion. R
 | Graph DB | Neo4j / Kuzu / FalkorDB / Neptune | libsql (single file) |
 | Vector | Provider-specific | libsql F32_BLOB + `vector_top_k` |
 | Keyword | Provider-specific (Lucene/FTS) | libsql FTS5 |
-| LLM | OpenAI / Anthropic / Gemini / Groq SDKs | ACP (no keys) |
+| LLM | OpenAI / Anthropic / Gemini / Groq SDKs | local `claude -p` (no keys) |
 | Embeddings | OpenAI / Voyage / Gemini / HF | transformers.js local (offline) |
-| Cross-encoder | OpenAI / BGE / Gemini | ACP prompt |
+| Cross-encoder | OpenAI / BGE / Gemini | local `claude -p` |
 | Runtime | Python 3.10+ | bun / node 18+ |
 
 ## License
