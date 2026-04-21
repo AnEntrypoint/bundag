@@ -3,6 +3,9 @@ import { embedOne } from './embeddings.js';
 import { getLLM } from './llm.js';
 import { promptLibrary } from './prompts/index.js';
 import { vectorSearchEdges, getEdgesBetween } from './store.js';
+import { logger } from './logger.js';
+
+const log = logger.child('edge-ops');
 
 export const EDGE_DEDUP_CANDIDATE_LIMIT = 10;
 
@@ -21,16 +24,21 @@ export async function extractEdges({ episode, nodes, previousEpisodes = [], edge
   });
   let res;
   try { res = await llm.generate(prompt.system, prompt.user); }
-  catch (e) { console.error('[bungraph] extractEdges LLM failed:', e?.message || e); res = { edges: [] }; }
+  catch (e) {
+    log.warn('extractEdges llm failed', { err: e?.message, nodes: nodes.length });
+    res = { edges: [] };
+  }
   const raw = Array.isArray(res?.edges) ? res.edges : [];
+  log.debug('edges llm response', { count: raw.length, nodeCount: nodes.length, response: JSON.stringify(res).slice(0, 200) });
 
   const nameToUuid = new Map(nodes.map(n => [n.name.toLowerCase(), n.uuid]));
   const edges = [];
+  let skipped = 0;
   for (const ex of raw) {
-    if (!ex?.source_entity_name || !ex?.target_entity_name || !ex?.fact) continue;
+    if (!ex?.source_entity_name || !ex?.target_entity_name || !ex?.fact) { skipped++; continue; }
     const src = nameToUuid.get(String(ex.source_entity_name).toLowerCase());
     const tgt = nameToUuid.get(String(ex.target_entity_name).toLowerCase());
-    if (!src || !tgt || src === tgt) continue;
+    if (!src || !tgt || src === tgt) { skipped++; continue; }
     edges.push({
       uuid: uuidv4(),
       group_id: episode.group_id,
@@ -48,6 +56,7 @@ export async function extractEdges({ episode, nodes, previousEpisodes = [], edge
       created_at: nowIso(),
     });
   }
+  log.debug('edges resolved', { created: edges.length, skipped, nodes: nodes.length });
   return edges;
 }
 
