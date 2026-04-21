@@ -43,6 +43,34 @@ export function vecLit(arr) {
 
 export async function checkpoint(mode = 'PASSIVE') {
   if (!db) return null;
+  if (mode === 'TRUNCATE') {
+    try {
+      await db.execute('DELETE FROM entity_node');
+      await db.execute('DELETE FROM episodic_node');
+      await db.execute('DELETE FROM community_node');
+      await db.execute('DELETE FROM saga_node');
+      await db.execute('DELETE FROM entity_edge');
+      await db.execute('DELETE FROM episodic_edge');
+      await db.execute('DELETE FROM community_edge');
+      await db.execute('DELETE FROM has_episode_edge');
+      await db.execute('DELETE FROM next_episode_edge');
+      for (const idx of [
+        'entity_node_vec', 'entity_edge_vec', 'community_node_vec'
+      ]) {
+        try { await db.execute(`DROP INDEX IF EXISTS ${idx}`); } catch {}
+      }
+      await db.execute('VACUUM');
+      for (const [tbl, col] of [
+        ['entity_node', 'name_embedding'],
+        ['entity_edge', 'fact_embedding'],
+        ['community_node', 'name_embedding'],
+      ]) {
+        try { await db.execute(`CREATE INDEX IF NOT EXISTS ${tbl}_vec ON ${tbl}(libsql_vector_idx(${col}))`); } catch {}
+      }
+      await db.execute('PRAGMA wal_checkpoint(RESTART)');
+    } catch (e) { log.warn('truncate failed', { err: e.message }); }
+    return null;
+  }
   try { return await db.execute(`PRAGMA wal_checkpoint(${mode})`); } catch (e) { log.warn('checkpoint failed', { err: e.message }); }
 }
 
