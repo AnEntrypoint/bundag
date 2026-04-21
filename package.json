@@ -1,12 +1,20 @@
 {
   "name": "bungraph",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "Turnkey temporal context graph (Graphiti 1:1 port) on libsql. Uses your local Claude Code CLI — no API keys. Single bunx command. MCP + HTTP + CLI.",
   "type": "module",
   "bin": {
     "bungraph": "./bin/bundag.js"
   },
   "main": "src/index.js",
+  "files": [
+    "bin",
+    "src",
+    "models",
+    "mcp.js",
+    "README.md",
+    "LICENSE"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AnEntrypoint/bundag.git"

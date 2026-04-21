@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { LRUCache } from 'lru-cache';
 import { logger } from './logger.js';
 import { register } from './debug-registry.js';
@@ -6,6 +9,10 @@ import { register } from './debug-registry.js';
 const log = logger.child('embeddings');
 const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 export const EMBED_DIM = 384;
+
+const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const LOCAL_MODELS_DIR = process.env.BUNGRAPH_MODELS_DIR || resolve(PKG_ROOT, 'models');
+const DTYPE = process.env.BUNGRAPH_EMBED_DTYPE || 'fp32';
 
 let modelCache = null;
 const state = { loaded: false, calls: 0, cacheHits: 0, cacheMisses: 0, stub: false };
@@ -19,10 +26,17 @@ async function getModel() {
     modelCache = { stub: true };
     return modelCache;
   }
-  log.info('loading model', { id: MODEL_ID });
+  const modelPath = resolve(LOCAL_MODELS_DIR, MODEL_ID);
+  if (!existsSync(modelPath)) {
+    throw new Error(`Embedding model not found at ${modelPath}. Set BUNGRAPH_MODELS_DIR or reinstall bungraph (models/ should ship with the package).`);
+  }
+  log.info('loading model', { id: MODEL_ID, path: modelPath, dtype: DTYPE });
   const { pipeline, env } = await import('@huggingface/transformers');
+  env.allowRemoteModels = false;
+  env.allowLocalModels = true;
+  env.localModelPath = LOCAL_MODELS_DIR;
   try { env.backends.onnx.wasm.numThreads = 1; env.backends.onnx.ort = null; } catch {}
-  modelCache = await pipeline('feature-extraction', MODEL_ID);
+  modelCache = await pipeline('feature-extraction', MODEL_ID, { dtype: DTYPE });
   state.loaded = true;
   return modelCache;
 }
