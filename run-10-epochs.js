@@ -28,9 +28,9 @@ let totalEdges = 0;
 
 async function epochCleanup() {
   try {
-    await checkpoint('PASSIVE');
+    await checkpoint('RESTART');
     if (global.gc) global.gc();
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 1000));
   } catch (e) {
     // cleanup errors non-fatal
   }
