@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Graphiti } from './src/index.js';
+import { Graphiti, checkpoint } from './src/index.js';
 import { resolve } from 'path';
 
 const timestamp = Date.now();
@@ -25,7 +25,16 @@ console.log('=== 10-EPOCH TIGER RESEARCH ===\n');
 const results = [];
 let totalNodes = 0;
 let totalEdges = 0;
-const EPOCH_TIMEOUT_MS = 45000;
+
+async function epochCleanup() {
+  try {
+    await checkpoint('PASSIVE');
+    if (global.gc) global.gc();
+    await new Promise(r => setTimeout(r, 100));
+  } catch (e) {
+    // cleanup errors non-fatal
+  }
+}
 
 for (let i = 0; i < epochs.length; i++) {
   const start = Date.now();
@@ -33,12 +42,7 @@ for (let i = 0; i < epochs.length; i++) {
   let ep = null;
 
   try {
-    ep = await Promise.race([
-      g.addEpisode({ content: epochs[i], source: 'text' }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`timeout after ${EPOCH_TIMEOUT_MS}ms`)), EPOCH_TIMEOUT_MS)
-      )
-    ]);
+    ep = await g.addEpisode({ content: epochs[i], source: 'text' });
     status = 'success';
   } catch (e) {
     status = 'error';
@@ -70,6 +74,10 @@ for (let i = 0; i < epochs.length; i++) {
     });
   }
   process.stdout.flush && process.stdout.flush();
+
+  if (i < epochs.length - 1) {
+    await epochCleanup();
+  }
 }
 
 console.log('\n=== SUMMARY ===');
