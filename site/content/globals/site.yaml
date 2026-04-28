@@ -1,0 +1,17 @@
+title: "bungraph"
+tagline: "temporal context graph (Graphiti port)"
+description: "turnkey temporal context graph on libsql + ACP. bunx-ready, no API keys. memory that understands time and relationships, not just embeddings."
+repo: "https://github.com/AnEntrypoint/bungraph"
+url: "https://anentrypoint.github.io/bungraph"
+year: 2026
+keywords:
+  - "memory"
+  - "graph"
+  - "libsql"
+  - "247420"
+  - "anentrypoint"
+accent_from: "#79c0ff"
+accent_to: "#bc8cff"
+glyph: "⌖"
+code: "040"
+category: "data"

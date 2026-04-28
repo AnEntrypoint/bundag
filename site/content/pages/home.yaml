@@ -1,0 +1,29 @@
+id: home
+title: Home
+hero:
+  heading: "bungraph"
+  subheading: "temporal context graph (Graphiti port)"
+  body: "turnkey temporal context graph on libsql + ACP. bunx-ready, no API keys. memory that understands time and relationships, not just embeddings."
+  badges:
+    - { label: "memory" }
+    - { label: "graph" }
+    - { label: "libsql" }
+    - { label: "data" }
+  ctas:
+    - { label: "GitHub", href: "https://github.com/AnEntrypoint/bungraph", primary: true }
+    - { label: "Install", href: "https://github.com/AnEntrypoint/bungraph#installation" }
+    - { label: "247420", href: "https://247420.xyz" }
+features:
+  heading: "Why bungraph"
+  items:
+    - { name: "memory", desc: "flagship trait of bungraph." }
+    - { name: "graph", desc: "core capability of bungraph." }
+    - { name: "libsql", desc: "core capability of bungraph." }
+quickstart:
+  heading: Quick start
+  lines:
+    - { kind: "cmt", text: "# install" }
+    - { kind: "cmd", text: "bunx bungraph" }
+    - { kind: "cmt", text: "" }
+    - { kind: "cmt", text: "# source" }
+    - { kind: "cmd", text: "git clone https://github.com/AnEntrypoint/bungraph.git" }

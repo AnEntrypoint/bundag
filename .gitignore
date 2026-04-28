@@ -19,3 +19,5 @@ dist/
 .claude/
 
 docs/
+.codeinsight/
+rs-learn.db
